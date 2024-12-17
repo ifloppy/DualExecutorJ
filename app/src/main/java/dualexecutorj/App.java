@@ -11,10 +11,16 @@ import java.io.FileOutputStream;
 import java.util.Arrays;
 import java.io.PrintWriter;
 import java.util.concurrent.TimeUnit;
+import java.io.BufferedInputStream;
 
 public class App {
+
     private static Process backgroundProcess;
     private static Process foregroundProcess;
+    private static Thread backgroundThread;
+    private static Thread consoleThread;
+
+    private static final int BUFFER_SIZE = 8192; // 8KB buffer
 
     private static void releaseConfig() throws IOException {
         File configFile = new File("./config.properties");
@@ -34,8 +40,22 @@ public class App {
     }
 
     private static void cleanupProcesses() {
+        // Close threads first
+        if (consoleThread != null) {
+            consoleThread.interrupt();
+        }
+        if (backgroundThread != null) {
+            backgroundThread.interrupt();
+        }
+
+        // Then clean up processes
         if (foregroundProcess != null) {
-            foregroundProcess.destroy();
+            foregroundProcess.destroyForcibly(); // More reliable than destroy()
+            try {
+                foregroundProcess.waitFor(5, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                // Ignore interruption during shutdown
+            }
         }
         if (backgroundProcess != null) {
             try {
@@ -44,7 +64,9 @@ public class App {
                         backgroundOutputStream.write("stop\n".getBytes());
                         backgroundOutputStream.flush();
                     }
-                    backgroundProcess.waitFor(5, TimeUnit.SECONDS); // Wait with timeout
+                    if (!backgroundProcess.waitFor(5, TimeUnit.SECONDS)) {
+                        backgroundProcess.destroyForcibly();
+                    }
                 }
             } catch (Exception e) {
                 backgroundProcess.destroyForcibly();
@@ -83,45 +105,67 @@ public class App {
         foregroundProcessBuilder.directory(new File(foregroundWorkDir));
         foregroundProcess = foregroundProcessBuilder.start();
 
-        // Background process output reader thread
-        Thread backgroundThread = new Thread(() -> {
-            try (BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(backgroundProcess.getInputStream()))) {
+        // Store thread references
+        backgroundThread = new Thread(() -> {
+            try (BufferedInputStream bis = new BufferedInputStream(backgroundProcess.getInputStream(), BUFFER_SIZE);
+                 BufferedInputStream bisErr = new BufferedInputStream(backgroundProcess.getErrorStream(), BUFFER_SIZE);
+                 BufferedReader reader = new BufferedReader(new InputStreamReader(bis), BUFFER_SIZE);
+                 BufferedReader errorReader = new BufferedReader(new InputStreamReader(bisErr), BUFFER_SIZE)) {
+                
                 String line;
-                while ((line = reader.readLine()) != null) {
+                while (!Thread.interrupted() && (line = reader.readLine()) != null) {
                     System.out.println("Background: " + line);
+                    Thread.sleep(1); // Small delay to prevent CPU hogging
+                }
+                while (!Thread.interrupted() && (line = errorReader.readLine()) != null) {
+                    System.err.println("Background Error: " + line);
+                    Thread.sleep(1); // Small delay to prevent CPU hogging
                 }
             } catch (IOException e) {
-                if (backgroundProcess.isAlive()) {
+                if (backgroundProcess.isAlive() && !Thread.interrupted()) {
                     System.err.println("Background process input stream closed unexpectedly.");
                 }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
             }
         });
         backgroundThread.setDaemon(true);
         backgroundThread.start();
 
-        // Console input to foreground process thread
-        Thread consoleThread = new Thread(() -> {
+        // Store thread reference and handle error stream
+        consoleThread = new Thread(() -> {
             try (BufferedReader consoleReader = new BufferedReader(new InputStreamReader(System.in));
                  PrintWriter foregroundWriter = new PrintWriter(foregroundProcess.getOutputStream(), true)) {
                 String line;
-                while ((line = consoleReader.readLine()) != null) {
+                while (!Thread.interrupted() && (line = consoleReader.readLine()) != null) {
                     foregroundWriter.println(line);
                 }
             } catch (IOException e) {
-                System.err.println("Error handling console input: " + e.getMessage());
+                if (!Thread.interrupted()) {
+                    System.err.println("Error handling console input: " + e.getMessage());
+                }
             }
         });
         consoleThread.setDaemon(true);
         consoleThread.start();
 
-        // Foreground process output reader
-        try (BufferedReader reader = new BufferedReader(
-                new InputStreamReader(foregroundProcess.getInputStream()))) {
+        // Handle both output and error streams for foreground process
+        try (BufferedInputStream bis = new BufferedInputStream(foregroundProcess.getInputStream(), BUFFER_SIZE);
+             BufferedInputStream bisErr = new BufferedInputStream(foregroundProcess.getErrorStream(), BUFFER_SIZE);
+             BufferedReader reader = new BufferedReader(new InputStreamReader(bis), BUFFER_SIZE);
+             BufferedReader errorReader = new BufferedReader(new InputStreamReader(bisErr), BUFFER_SIZE)) {
+            
             String line;
             while ((line = reader.readLine()) != null) {
                 System.out.println(line);
+                Thread.sleep(1); // Small delay to prevent CPU hogging
             }
+            while ((line = errorReader.readLine()) != null) {
+                System.err.println("Foreground Error: " + line);
+                Thread.sleep(1); // Small delay to prevent CPU hogging
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
 
         foregroundProcess.waitFor();
