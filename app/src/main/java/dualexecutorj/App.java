@@ -12,6 +12,8 @@ import java.util.Arrays;
 import java.io.PrintWriter;
 import java.util.concurrent.TimeUnit;
 import java.io.BufferedInputStream;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 
 public class App {
 
@@ -21,6 +23,7 @@ public class App {
     private static Thread consoleThread;
 
     private static final int BUFFER_SIZE = 8192; // 8KB buffer
+    private static final ScheduledExecutorService gcScheduler = Executors.newSingleThreadScheduledExecutor();
 
     private static void releaseConfig() throws IOException {
         File configFile = new File("./config.properties");
@@ -75,8 +78,12 @@ public class App {
     }
 
     public static void main(String[] args) throws IOException, InterruptedException {
-        // Register shutdown hook for clean process termination
+        // Schedule periodic GC
+        gcScheduler.scheduleAtFixedRate(() -> System.gc(), 1, 1, TimeUnit.MINUTES);
+
+        // Add gcScheduler shutdown to the shutdown hook
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            gcScheduler.shutdown();
             cleanupProcesses();
         }));
 
@@ -105,8 +112,8 @@ public class App {
         foregroundProcessBuilder.directory(new File(foregroundWorkDir));
         foregroundProcess = foregroundProcessBuilder.start();
 
-        // Store thread references
-        backgroundThread = new Thread(() -> {
+        // Replace background thread creation with virtual thread
+        backgroundThread = Thread.ofVirtual().name("background").start(() -> {
             try (BufferedInputStream bis = new BufferedInputStream(backgroundProcess.getInputStream(), BUFFER_SIZE);
                  BufferedInputStream bisErr = new BufferedInputStream(backgroundProcess.getErrorStream(), BUFFER_SIZE);
                  BufferedReader reader = new BufferedReader(new InputStreamReader(bis), BUFFER_SIZE);
@@ -129,11 +136,9 @@ public class App {
                 Thread.currentThread().interrupt();
             }
         });
-        backgroundThread.setDaemon(true);
-        backgroundThread.start();
 
-        // Store thread reference and handle error stream
-        consoleThread = new Thread(() -> {
+        // Replace console thread creation with virtual thread
+        consoleThread = Thread.ofVirtual().name("console").start(() -> {
             try (BufferedReader consoleReader = new BufferedReader(new InputStreamReader(System.in));
                  PrintWriter foregroundWriter = new PrintWriter(foregroundProcess.getOutputStream(), true)) {
                 String line;
@@ -146,8 +151,6 @@ public class App {
                 }
             }
         });
-        consoleThread.setDaemon(true);
-        consoleThread.start();
 
         // Handle both output and error streams for foreground process
         try (BufferedInputStream bis = new BufferedInputStream(foregroundProcess.getInputStream(), BUFFER_SIZE);
