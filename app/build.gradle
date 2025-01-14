@@ -52,3 +52,17 @@ tasks.withType(Test).configureEach {
 tasks.withType(JavaExec).configureEach {
     jvmArgs += '--enable-preview'
 }
+
+// Task to copy the JAR file
+tasks.register('copyJarToServer', Copy) {
+    from layout.buildDirectory.file("libs/app.jar")
+    into layout.buildDirectory
+    rename { String fileName ->
+        'server.jar'
+    }
+}
+
+// Make copyJarToServer run after the jar task
+tasks.copyJarToServer.dependsOn tasks.jar
+// Make build task depend on copyJarToServer
+tasks.build.finalizedBy tasks.copyJarToServer
