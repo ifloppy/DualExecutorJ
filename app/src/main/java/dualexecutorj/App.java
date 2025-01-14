@@ -1,4 +1,5 @@
 package dualexecutorj;
+
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
@@ -78,6 +79,56 @@ public class App {
     }
 
     public static void main(String[] args) throws IOException, InterruptedException {
+
+        Properties props = new Properties();
+        releaseConfig();
+
+        try (FileInputStream configInput = new FileInputStream("./config.properties")) {
+            props.load(configInput);
+        } catch (IOException e) {
+            props.setProperty("backgroundCommand", "config_undefined");
+            props.setProperty("foregroundCommand", "config_undefined");
+            props.setProperty("backgroundWorkDir", ".");
+            props.setProperty("foregroundWorkDir", ".");
+            props.setProperty("directExecuteFile", "disabled");
+        }
+
+        String directExecuteFile = props.getProperty("directExecuteFile", "disabled");
+        if (!"disabled".equals(directExecuteFile)) {
+            // Release the memory of props and call gc here
+            props.clear();
+            props = null;
+            System.gc();
+            // Direct execution mode
+            File execFile = new File(directExecuteFile);
+            if (!execFile.exists()) {
+                System.err.println("Error: Specified file '" + directExecuteFile + "' does not exist.");
+                System.exit(1);
+            }
+            if (!execFile.canExecute()) {
+                System.err.println("Error: Specified file '" + directExecuteFile + "' is not executable.");
+                System.exit(1);
+            }
+
+            ProcessBuilder directProcessBuilder = new ProcessBuilder(directExecuteFile);
+            directProcessBuilder.inheritIO(); // Inherit all IO streams
+            Process directProcess = directProcessBuilder.start();
+
+            // Keep the main process running indefinitely
+            try {
+                Thread.sleep(Long.MAX_VALUE);
+            } catch (InterruptedException e) {
+                // If interrupted, clean up and exit
+                if (directProcess.isAlive()) {
+                    directProcess.destroyForcibly();
+                }
+                Thread.currentThread().interrupt();
+            }
+            return;
+        }
+
+        // Original dual-execution logic continues below
+
         // Schedule periodic GC
         gcScheduler.scheduleAtFixedRate(() -> System.gc(), 1, 1, TimeUnit.MINUTES);
 
@@ -86,18 +137,6 @@ public class App {
             gcScheduler.shutdown();
             cleanupProcesses();
         }));
-
-        Properties props = new Properties();
-        releaseConfig();
-        
-        try (FileInputStream configInput = new FileInputStream("./config.properties")) {
-            props.load(configInput);
-        } catch (IOException e) {
-            props.setProperty("backgroundCommand", "config_undefined");
-            props.setProperty("foregroundCommand", "config_undefined");
-            props.setProperty("backgroundWorkDir", ".");
-            props.setProperty("foregroundWorkDir", ".");
-        }
 
         String backgroundCommand = props.getProperty("backgroundCommand");
         String foregroundCommand = props.getProperty("foregroundCommand");
@@ -115,10 +154,11 @@ public class App {
         // Replace background thread creation with virtual thread
         backgroundThread = Thread.ofVirtual().name("background").start(() -> {
             try (BufferedInputStream bis = new BufferedInputStream(backgroundProcess.getInputStream(), BUFFER_SIZE);
-                 BufferedInputStream bisErr = new BufferedInputStream(backgroundProcess.getErrorStream(), BUFFER_SIZE);
-                 BufferedReader reader = new BufferedReader(new InputStreamReader(bis), BUFFER_SIZE);
-                 BufferedReader errorReader = new BufferedReader(new InputStreamReader(bisErr), BUFFER_SIZE)) {
-                
+                    BufferedInputStream bisErr = new BufferedInputStream(backgroundProcess.getErrorStream(),
+                            BUFFER_SIZE);
+                    BufferedReader reader = new BufferedReader(new InputStreamReader(bis), BUFFER_SIZE);
+                    BufferedReader errorReader = new BufferedReader(new InputStreamReader(bisErr), BUFFER_SIZE)) {
+
                 String line;
                 while (!Thread.interrupted() && (line = reader.readLine()) != null) {
                     System.out.println("Background: " + line);
@@ -140,7 +180,7 @@ public class App {
         // Replace console thread creation with virtual thread
         consoleThread = Thread.ofVirtual().name("console").start(() -> {
             try (BufferedReader consoleReader = new BufferedReader(new InputStreamReader(System.in));
-                 PrintWriter foregroundWriter = new PrintWriter(foregroundProcess.getOutputStream(), true)) {
+                    PrintWriter foregroundWriter = new PrintWriter(foregroundProcess.getOutputStream(), true)) {
                 String line;
                 while (!Thread.interrupted() && (line = consoleReader.readLine()) != null) {
                     foregroundWriter.println(line);
@@ -154,10 +194,10 @@ public class App {
 
         // Handle both output and error streams for foreground process
         try (BufferedInputStream bis = new BufferedInputStream(foregroundProcess.getInputStream(), BUFFER_SIZE);
-             BufferedInputStream bisErr = new BufferedInputStream(foregroundProcess.getErrorStream(), BUFFER_SIZE);
-             BufferedReader reader = new BufferedReader(new InputStreamReader(bis), BUFFER_SIZE);
-             BufferedReader errorReader = new BufferedReader(new InputStreamReader(bisErr), BUFFER_SIZE)) {
-            
+                BufferedInputStream bisErr = new BufferedInputStream(foregroundProcess.getErrorStream(), BUFFER_SIZE);
+                BufferedReader reader = new BufferedReader(new InputStreamReader(bis), BUFFER_SIZE);
+                BufferedReader errorReader = new BufferedReader(new InputStreamReader(bisErr), BUFFER_SIZE)) {
+
             String line;
             while ((line = reader.readLine()) != null) {
                 System.out.println(line);
