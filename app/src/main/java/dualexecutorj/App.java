@@ -172,6 +172,22 @@ public class App {
         }
 
         foregroundProcess.waitFor();
+        // After foreground process ends, terminate the background process
+        if (backgroundProcess != null && backgroundProcess.isAlive()) {
+            try {
+                // Try graceful shutdown first
+                try (OutputStream backgroundOutputStream = backgroundProcess.getOutputStream()) {
+                    backgroundOutputStream.write("stop\n".getBytes());
+                    backgroundOutputStream.flush();
+                }
+                // Wait for 5 seconds, then force kill if still alive
+                if (!backgroundProcess.waitFor(5, TimeUnit.SECONDS)) {
+                    backgroundProcess.destroyForcibly();
+                }
+            } catch (Exception e) {
+                backgroundProcess.destroyForcibly();
+            }
+        }
         cleanupProcesses();
     }
 }
