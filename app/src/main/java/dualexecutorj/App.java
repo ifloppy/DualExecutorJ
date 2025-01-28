@@ -114,15 +114,21 @@ public class App {
             directProcessBuilder.inheritIO(); // Inherit all IO streams
             Process directProcess = directProcessBuilder.start();
 
-            // Keep the main process running indefinitely
+            // Keep the main process running and monitor child process
             try {
-                Thread.sleep(Long.MAX_VALUE);
+                while (directProcess.isAlive()) {
+                    Thread.sleep(1000); // Check every second
+                }
+                // If we get here, the child process has stopped
+                System.out.println("Child process has terminated. Exiting...");
+                System.exit(directProcess.exitValue());
             } catch (InterruptedException e) {
                 // If interrupted, clean up and exit
                 if (directProcess.isAlive()) {
                     directProcess.destroyForcibly();
                 }
                 Thread.currentThread().interrupt();
+                System.exit(1);
             }
             return;
         }
